@@ -158,9 +158,9 @@ end
 ---@param outcome "selected"|"cancelled"
 ---@param option_id? string  required when outcome == "selected"
 function M.respond_permission(id, outcome, option_id)
-  local result = { outcome = outcome }
-  if outcome == "selected" then result.optionId = option_id end
-  return M.respond(id, result)
+  local o = { outcome = outcome }
+  if outcome == "selected" then o.optionId = option_id end
+  return M.respond(id, { outcome = o })
 end
 
 --- Respond to fs/read_text_file
@@ -206,28 +206,40 @@ function M.content.resource(uri, text, mime_type)
   return { type = "resource", resource = { uri = uri, text = text, mimeType = mime_type } }
 end
 
+-- ── Capability registry ──────────────────────────────────────────────────────
+
+local _capabilities = {}
+
+--- Register a handler for one or more methods.
+--- Single:  M.capability("fs/read_text_file", fn)
+--- Bulk:    M.capability({ ["fs/read_text_file"] = fn, ... })
+---@param method string|table<string, function>
+---@param handler? function
+function M.capability(method, handler)
+  if type(method) == "table" then
+    for k, v in pairs(method) do _capabilities[k] = v end
+  else
+    _capabilities[method] = handler
+  end
+end
+
 -- ── Dispatcher ───────────────────────────────────────────────────────────────
 
---- Dispatch an incoming message to a handler table.
---- handlers keys: method names for requests/notifications,
----                "response" for responses, "error" for error responses.
+--- Dispatch an incoming message.
+--- `handlers` (optional) takes priority over the capability registry.
+--- keys: method names, "response", "error"
 ---@param msg table
----@param handlers table<string, function>
+---@param handlers? table<string, function>
 function M.dispatch(msg, handlers)
+  handlers = handlers or {}
   if M.is_response(msg) then
-    if msg.error then
-      local h = handlers["error"]
-      if h then h(msg.id, msg.error) end
-    else
-      local h = handlers["response"]
-      if h then h(msg.id, msg.result) end
-    end
+    local h = handlers[msg.error and "error" or "response"] or _capabilities[msg.error and "error" or "response"]
+    if h then h(msg.id, msg.error or msg.result) end
   elseif msg.method then
-    local h = handlers[msg.method]
+    local h = handlers[msg.method] or _capabilities[msg.method]
     if h then
       h(msg.id, msg.params)
     elseif M.is_request(msg) then
-      -- unknown method – send back an error
       return M.error_response(msg.id, M.errors.METHOD_NOT_FOUND, "method not found: " .. msg.method)
     end
   end
